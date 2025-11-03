@@ -1,36 +1,10 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 'use client'
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Icon } from '@iconify/react'
-
-
-declare global {
-  interface Window {
-    webkitSpeechRecognition:  SpeechRecognition
-  }
-
-  interface SpeechRecognition extends EventTarget {
-    continuous: boolean
-    interimResults: boolean
-    lang: string
-    start: () => void
-    stop: () => void
-    onstart: (() => void) | null
-    onresult: ((event: SpeechRecognitionEvent) => void) | null
-    onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
-    onend: (() => void) | null
-  }
-
-  interface SpeechRecognition extends Event {
-    resultIndex: number
-    results: SpeechRecognition
-  }
-
-  interface SpeechRecognition extends Event {
-    error: 'no-speech' | 'audio-capture' | 'not-allowed' | string
-  }
-}
 
 interface Reference {
   id: number
@@ -44,6 +18,13 @@ interface Reference {
 
 interface BookAbbreviations {
   [key: string]: string
+}
+
+const getSpeechRecognitionConstructor = () => {
+  if (typeof window === 'undefined') return null
+  // we use `any` here only to read runtime constructors without redeclaring types
+  const win = window as any
+  return win.SpeechRecognition || win.webkitSpeechRecognition || null
 }
 
 const ScriptureListener: React.FC = () => {
@@ -110,7 +91,6 @@ const ScriptureListener: React.FC = () => {
     return null
   }
 
-  // ✅ Wrapped in useCallback to fix missing dependency warning
   const detectScriptureReferences = useCallback((text: string) => {
     const patterns = [
       /\b((?:1|2|3|First|Second|Third|I|II|III)?\s*[A-Za-z]+)\s+(\d+)(?::(\d+)(?:-(\d+))?)?\b/gi,
@@ -147,60 +127,71 @@ const ScriptureListener: React.FC = () => {
         }
       }
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognitionClass =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-      const recognition = new SpeechRecognitionClass() as SpeechRecognition
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.lang = 'en-US'
-
-      recognition.onstart = () => {
-        setError('')
-        setIsListening(true)
-      }
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let finalTranscript = ''
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcriptPart = event.results[i][0].transcript
-          if (event.results[i].isFinal) {
-            finalTranscript += transcriptPart + ' '
-            detectScriptureReferences(transcriptPart)
-          }
-        }
-        setTranscript((prev) => prev + finalTranscript)
-      }
-
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        setIsListening(false)
-        let message = ''
-        switch (event.error) {
-          case 'no-speech':
-            message = 'No speech detected. Please try again.'
-            break
-          case 'audio-capture':
-            message = 'Microphone not found.'
-            break
-          case 'not-allowed':
-            message = 'Microphone access denied.'
-            break
-          default:
-            message = `Error: ${event.error}`
-        }
-        setError(message)
-      }
-
-      recognition.onend = () => setIsListening(false)
-
-      recognitionRef.current = recognition
-    } else {
+    const RecognitionClass = getSpeechRecognitionConstructor()
+    if (!RecognitionClass) {
       setIsSupported(false)
       setError('Speech recognition not supported. Try Chrome or Edge.')
+      return
+    }
+
+    const recognition = new RecognitionClass() as SpeechRecognition
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = 'en-US'
+
+    recognition.onstart = () => {
+      setError('')
+      setIsListening(true)
+    }
+
+    // Use the built-in SpeechRecognitionEvent type
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let finalTranscript = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcriptPart = event.results[i][0].transcript
+        if (event.results[i].isFinal) {
+          finalTranscript += transcriptPart + ' '
+          detectScriptureReferences(transcriptPart)
+        }
+      }
+      setTranscript((prev) => prev + finalTranscript)
+    }
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      setIsListening(false)
+      let message = ''
+      switch (event.error) {
+        case 'no-speech':
+          message = 'No speech detected. Please try again.'
+          break
+        case 'audio-capture':
+          message = 'Microphone not found.'
+          break
+        case 'not-allowed':
+          message = 'Microphone access denied.'
+          break
+        default:
+          // event.error is typed in lib.dom as SpeechRecognitionErrorCode | string depending on TS version
+          message = `Error: ${String((event as any).error ?? 'unknown')}`
+      }
+      setError(message)
+    }
+
+    recognition.onend = () => setIsListening(false)
+
+    recognitionRef.current = recognition
+
+    // Cleanup on unmount
+    return () => {
+      try {
+        recognition.stop()
+      } catch {
+        /* ignore */
+      }
+      recognitionRef.current = null
     }
   }, [detectScriptureReferences])
 
